@@ -104,8 +104,10 @@ def parse_cities_csv(filepath: str | Path | None = None) -> pd.DataFrame:
         logger.error("Failed to read city CSV at %s", path)
         raise
 
+    # Normalize the column names
     data_frame.columns = [normalize_header(column) for column in data_frame.columns]
 
+    # Check if the required columns are present
     required = ("city", "latitude", "longitude")
     missing = [column for column in required if column not in data_frame.columns]
     if missing:
@@ -118,13 +120,16 @@ def parse_cities_csv(filepath: str | Path | None = None) -> pd.DataFrame:
             f"CSV is missing required columns {missing}. Found: {list(data_frame.columns)}"
         )
 
+    # Normalize the city and country names
     data_frame["city"] = data_frame["city"].map(normalize_city_name)
     if "country" in data_frame.columns:
         data_frame["country"] = data_frame["country"].map(normalize_country_name)
 
+    # Convert the latitude and longitude to numeric
     data_frame["latitude"] = pd.to_numeric(data_frame["latitude"], errors="coerce")
     data_frame["longitude"] = pd.to_numeric(data_frame["longitude"], errors="coerce")
 
+    # Drop any rows with missing city, latitude, or longitude
     data_frame = data_frame.dropna(subset=["city", "latitude", "longitude"])
     data_frame = data_frame[data_frame["city"].str.len() > 0]
     data_frame = data_frame.reset_index(drop=True)
@@ -188,15 +193,18 @@ def hourly_forecasts_to_dataframe(raw_results: list[dict]) -> pd.DataFrame:
                 }
             )
 
+    # Check if there are any valid records
     if not records:
         logger.error("No valid records found to transform.")
         return pd.DataFrame(columns=["City", "Time", "Temp_C", "Precip_mm"])
 
+    # Convert the records to a DataFrame
     data_frame = pd.DataFrame(records)
     data_frame["Time"] = pd.to_datetime(data_frame["Time"], errors="coerce")
     data_frame["Temp_C"] = pd.to_numeric(data_frame["Temp_C"], errors="coerce")
     data_frame["Precip_mm"] = pd.to_numeric(data_frame["Precip_mm"], errors="coerce")
 
+    # Drop any rows with missing time, temperature, or precipitation
     row_count = len(data_frame)
     data_frame = data_frame.dropna(subset=["Time", "Temp_C", "Precip_mm"])
     dropped = row_count - len(data_frame)
@@ -252,6 +260,7 @@ def export_excel_report(
         worksheet.freeze_panes = "A2"
         worksheet.auto_filter.ref = worksheet.dimensions
 
+        # Set the width of the columns
         for column_cells in worksheet.columns:
             max_length = max(
                 (len(str(cell.value)) if cell.value is not None else 0)
@@ -284,6 +293,7 @@ def export_heat_alerts(
     return filepath
 
 
+# Main function to execute the pipeline
 def main() -> None:
     DATA_DIR.mkdir(exist_ok=True)
     REPORTS_DIR.mkdir(exist_ok=True)
@@ -294,6 +304,7 @@ def main() -> None:
         print(f"Normalized {len(cities)} cities from {RAW_CITIES_CSV.name}:")
         print(cities.to_string(index=False))
 
+        # Begin sequential weather data extraction
         logger.info("Beginning sequential weather data extraction...")
         start_sync = time.perf_counter()
         weather = fetch_weather_all_cities(cities)
@@ -304,16 +315,20 @@ def main() -> None:
         print(f"Fetched weather for {fetched} of {len(weather)} cities.")
         print(f"Sequential execution time: {sync_duration:.2f} seconds.")
 
+        # Convert the weather data to a DataFrame
         hourly_df = hourly_forecasts_to_dataframe(weather)
         print(hourly_df.head())
 
+        # Aggregate the daily weather data
         daily_summary = aggregate_daily_weather(hourly_df)
         daily_summary = merge_city_metadata(daily_summary, cities)
         print(daily_summary.head())
 
+        # Export the daily weather data to an Excel file
         excel_path = export_excel_report(daily_summary)
         print(f"Excel report saved to {excel_path}")
 
+        # Export the heat alerts to a JSON file
         alerts_path = export_heat_alerts(daily_summary)
         print(f"JSON heat alerts saved to {alerts_path}")
     except Exception:

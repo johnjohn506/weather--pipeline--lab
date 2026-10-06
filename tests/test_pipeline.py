@@ -32,6 +32,7 @@ from src.pipeline import (
     ],
     ids=["Paris", "Tokyo", "Mumbai", "Seoul", "New York", "Sao Paulo"],
 )
+# Test normalize_city_name
 def test_normalize_city_name(raw, expected):
     assert normalize_city_name(raw) == expected
 
@@ -73,16 +74,22 @@ def test_hourly_forecasts_to_dataframe_drops_missing_and_parses_time():
         {"city": "Tokyo", "data": None},
     ]
 
+    # Convert the raw results to a DataFrame
     data_frame = hourly_forecasts_to_dataframe(raw_results)
 
+    # Check if the DataFrame has the correct number of rows
     assert len(data_frame) == 1
+    # Check if the first row has the correct city
     assert data_frame.iloc[0]["City"] == "Paris"
+    # Check if the first row has the correct temperature
     assert data_frame.iloc[0]["Temp_C"] == 15.0
+    # Check if the Time column is a datetime64 dtype
     assert pd.api.types.is_datetime64_any_dtype(data_frame["Time"])
 
 
 # Test aggregate_daily_weather_max_temp_and_precip_sum
 def test_aggregate_daily_weather_max_temp_and_precip_sum():
+    # Create a DataFrame with the hourly weather data
     hourly_df = pd.DataFrame(
         {
             "City": ["Paris", "Paris", "Tokyo"],
@@ -104,6 +111,7 @@ def test_aggregate_daily_weather_max_temp_and_precip_sum():
 
 # Test merge_city_metadata_joins_normalized_names
 def test_merge_city_metadata_joins_normalized_names():
+    # Create a DataFrame with the daily weather data
     daily_summary = pd.DataFrame(
         {
             "City": ["Paris"],
@@ -112,6 +120,7 @@ def test_merge_city_metadata_joins_normalized_names():
             "Total_Precip_mm": [3.0],
         }
     )
+    # Create a DataFrame with the city metadata
     cities = pd.DataFrame(
         {
             "city": ["Paris"],
@@ -147,6 +156,7 @@ def test_fetch_weather_uses_mocked_api_response():
     mock_client = MagicMock()
     mock_client.get.return_value = mock_response
 
+    # Fetch the weather data
     result = fetch_weather(mock_client, "Paris", 48.85, 2.35)
 
     assert result["city"] == "Paris"
