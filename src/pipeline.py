@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+# Standard library imports
 import logging
 import os
 import re
 import time
 from pathlib import Path
 
+# Third-party imports
 import httpx
 import pandas as pd
 from dotenv import load_dotenv
@@ -17,12 +19,17 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 REPORTS_DIR = ROOT_DIR / "reports"
 RAW_CITIES_CSV = DATA_DIR / "raw_cities.csv"
+EXCEL_REPORT_PATH = REPORTS_DIR / "weather_summary.xlsx"
+JSON_ALERTS_PATH = REPORTS_DIR / "alerts.json"
+HEAT_ALERT_THRESHOLD_C = 30.0
 
+# Load environment variables from .env file
 load_dotenv(ROOT_DIR / ".env")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
+# Configure logging
 logging.basicConfig(
     filename=ROOT_DIR / "pipeline.log",
     level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
@@ -31,7 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("Pipeline configuration successfully loaded.")
 
-# Column aliases for messy CSV headers
+# Define column aliases for messy CSV headers
 COLUMN_ALIASES = {
     "city": "city",
     "city_name": "city",
@@ -45,7 +52,7 @@ COLUMN_ALIASES = {
     "longitude": "longitude",
 }
 
-# Normalize messy CSV headers to snake_case aliases.
+# Normalize messy CSV headers to snake_case aliases
 def normalize_header(name: object) -> str:
     cleaned = str(name).strip().lower()
     cleaned = re.sub(r"[\s\-]+", "_", cleaned)
@@ -53,7 +60,7 @@ def normalize_header(name: object) -> str:
     return COLUMN_ALIASES.get(cleaned, cleaned) # type: ignore
 
 
-# Clean a city label with regex search/replace, strip, and title-case.
+# Clean a city label with regex search/replace, strip, and title-case
 def normalize_city_name(value: object) -> str:
     text = str(value).strip()
 
@@ -72,7 +79,7 @@ def normalize_city_name(value: object) -> str:
     return text.strip().title()
 
 
-# Clean a country label with the same string-normalization toolkit.
+# Clean a country label with the same string-normalization toolkit
 def normalize_country_name(value: object) -> str:
     text = str(value).strip()
     text = re.sub(r"\.", "", text)
@@ -85,7 +92,7 @@ def normalize_country_name(value: object) -> str:
     return cleaned
 
 
-# Parse the raw cities CSV and return normalized city coordinates.
+# Parse the raw cities CSV and return normalized city coordinates
 def parse_cities_csv(filepath: str | Path | None = None) -> pd.DataFrame:
     path = Path(filepath) if filepath is not None else RAW_CITIES_CSV
     logger.info("Loading raw city data from %s", path)
@@ -124,7 +131,7 @@ def parse_cities_csv(filepath: str | Path | None = None) -> pd.DataFrame:
     return data_frame
 
 
-# Fetch hourly forecast data for a single city from Open-Meteo.
+# Fetch hourly forecast data for a single city from Open-Meteo
 def fetch_weather(client: httpx.Client, city: str, lat: float, lon: float) -> dict:
     params = {
         "latitude": lat,
@@ -144,7 +151,7 @@ def fetch_weather(client: httpx.Client, city: str, lat: float, lon: float) -> di
         return {"city": city, "data": None}
 
 
-# Fetch weather data sequentially, one city at a time.
+# Fetch weather data sequentially, one city at a time
 def fetch_weather_all_cities(cities: pd.DataFrame) -> list[dict]:
     results = []
     with httpx.Client() as client:
@@ -155,7 +162,7 @@ def fetch_weather_all_cities(cities: pd.DataFrame) -> list[dict]:
     return results
 
 
-# Parse Open-Meteo hourly JSON into a DataFrame with datetime timestamps.
+# Parse Open-Meteo hourly JSON into a DataFrame with datetime timestamps
 def hourly_forecasts_to_dataframe(raw_results: list[dict]) -> pd.DataFrame:
     records = []
 
@@ -199,7 +206,7 @@ def hourly_forecasts_to_dataframe(raw_results: list[dict]) -> pd.DataFrame:
     return data_frame
 
 
-# Aggregate hourly weather data into daily summaries by city.
+# Aggregate hourly weather data into daily summaries by city
 def aggregate_daily_weather(hourly_df: pd.DataFrame) -> pd.DataFrame:
     if hourly_df.empty:
         logger.error("No hourly records available to aggregate.")
@@ -215,7 +222,7 @@ def aggregate_daily_weather(hourly_df: pd.DataFrame) -> pd.DataFrame:
     return daily_summary
 
 
-# Join aggregated weather stats with normalized city names from the CSV.
+# Join aggregated weather stats with normalized city names from the CSV
 def merge_city_metadata(
     daily_summary: pd.DataFrame, cities: pd.DataFrame
 ) -> pd.DataFrame:
@@ -228,6 +235,51 @@ def merge_city_metadata(
 
     logger.info("Merged city metadata into %s aggregated rows.", len(merged))
     return merged
+
+
+# Export the merged daily weather DataFrame to a formatted Excel file
+def export_excel_report(
+    merged_df: pd.DataFrame, filepath: Path = EXCEL_REPORT_PATH
+) -> Path:
+    REPORTS_DIR.mkdir(exist_ok=True)
+    sheet_name = "Daily Summary"
+
+    with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+        merged_df.to_excel(writer, sheet_name=sheet_name, index=False)
+        worksheet = writer.sheets[sheet_name]
+        worksheet.freeze_panes = "A2"
+        worksheet.auto_filter.ref = worksheet.dimensions
+
+        for column_cells in worksheet.columns:
+            max_length = max(
+                (len(str(cell.value)) if cell.value is not None else 0)
+                for cell in column_cells
+            )
+            worksheet.column_dimensions[column_cells[0].column_letter].width = min(
+                max_length + 2, 40
+            )
+
+    logger.info("Excel report saved to %s", filepath)
+    return filepath
+
+
+# Export cities exceeding the heat threshold as a JSON alert payload
+def export_heat_alerts(
+    merged_df: pd.DataFrame,
+    filepath: Path = JSON_ALERTS_PATH,
+    threshold_c: float = HEAT_ALERT_THRESHOLD_C,
+) -> Path:
+    REPORTS_DIR.mkdir(exist_ok=True)
+    alert_columns = ["City", "Date", "Max_Temp_C"]
+    if "country" in merged_df.columns:
+        alert_columns.insert(1, "country")
+
+    alerts = merged_df.loc[merged_df["Max_Temp_C"] > threshold_c, alert_columns].copy()
+    alerts.to_json(filepath, orient="records", indent=2, date_format="iso")
+    logger.info(
+        "Wrote %s heat alerts (> %.1f°C) to %s", len(alerts), threshold_c, filepath
+    )
+    return filepath
 
 
 def main() -> None:
@@ -256,6 +308,12 @@ def main() -> None:
         daily_summary = aggregate_daily_weather(hourly_df)
         daily_summary = merge_city_metadata(daily_summary, cities)
         print(daily_summary.head())
+
+        excel_path = export_excel_report(daily_summary)
+        print(f"Excel report saved to {excel_path}")
+
+        alerts_path = export_heat_alerts(daily_summary)
+        print(f"JSON heat alerts saved to {alerts_path}")
     except Exception:
         logger.exception("Pipeline execution failed.")
         raise
