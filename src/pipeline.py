@@ -45,17 +45,16 @@ COLUMN_ALIASES = {
     "longitude": "longitude",
 }
 
-
+# Normalize messy CSV headers to snake_case aliases.
 def normalize_header(name: object) -> str:
-    """Normalize messy CSV headers to snake_case aliases."""
     cleaned = str(name).strip().lower()
     cleaned = re.sub(r"[\s\-]+", "_", cleaned)
     cleaned = re.sub(r"[^a-z0-9_]", "", cleaned)
-    return COLUMN_ALIASES.get(cleaned, cleaned)
+    return COLUMN_ALIASES.get(cleaned, cleaned) # type: ignore
 
 
+# Clean a city label with regex search/replace, strip, and title-case.
 def normalize_city_name(value: object) -> str:
-    """Clean a city label with regex search/replace, strip, and title-case."""
     text = str(value).strip()
 
     # Drop parenthetical aliases: "mumbai (bombay)" -> "mumbai"
@@ -73,8 +72,8 @@ def normalize_city_name(value: object) -> str:
     return text.strip().title()
 
 
+# Clean a country label with the same string-normalization toolkit.
 def normalize_country_name(value: object) -> str:
-    """Clean a country label with the same string-normalization toolkit."""
     text = str(value).strip()
     text = re.sub(r"\.", "", text)
     text = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE)
@@ -86,8 +85,8 @@ def normalize_country_name(value: object) -> str:
     return cleaned
 
 
+# Parse the raw cities CSV and return normalized city coordinates.
 def parse_cities_csv(filepath: str | Path | None = None) -> pd.DataFrame:
-    """Parse the raw cities CSV and return normalized city coordinates."""
     path = Path(filepath) if filepath is not None else RAW_CITIES_CSV
     logger.info("Loading raw city data from %s", path)
 
@@ -125,8 +124,8 @@ def parse_cities_csv(filepath: str | Path | None = None) -> pd.DataFrame:
     return data_frame
 
 
+# Fetch hourly forecast data for a single city from Open-Meteo.
 def fetch_weather(client: httpx.Client, city: str, lat: float, lon: float) -> dict:
-    """Fetch hourly forecast data for a single city from Open-Meteo."""
     params = {
         "latitude": lat,
         "longitude": lon,
@@ -145,8 +144,8 @@ def fetch_weather(client: httpx.Client, city: str, lat: float, lon: float) -> di
         return {"city": city, "data": None}
 
 
+# Fetch weather data sequentially, one city at a time.
 def fetch_weather_all_cities(cities: pd.DataFrame) -> list[dict]:
-    """Fetch weather data sequentially, one city at a time."""
     results = []
     with httpx.Client() as client:
         for _, row in cities.iterrows():
@@ -154,6 +153,81 @@ def fetch_weather_all_cities(cities: pd.DataFrame) -> list[dict]:
                 fetch_weather(client, row["city"], row["latitude"], row["longitude"])
             )
     return results
+
+
+# Parse Open-Meteo hourly JSON into a DataFrame with datetime timestamps.
+def hourly_forecasts_to_dataframe(raw_results: list[dict]) -> pd.DataFrame:
+    records = []
+
+    for result in raw_results:
+        city = result["city"]
+        hourly = result["data"]
+        if not hourly:
+            logger.error("No hourly forecast data for %s", city)
+            continue
+
+        times = hourly.get("time", [])
+        temps = hourly.get("temperature_2m", [])
+        precips = hourly.get("precipitation", [])
+
+        for timestamp, temp, precip in zip(times, temps, precips):
+            records.append(
+                {
+                    "City": city,
+                    "Time": timestamp,
+                    "Temp_C": temp,
+                    "Precip_mm": precip,
+                }
+            )
+
+    if not records:
+        logger.error("No valid records found to transform.")
+        return pd.DataFrame(columns=["City", "Time", "Temp_C", "Precip_mm"])
+
+    data_frame = pd.DataFrame(records)
+    data_frame["Time"] = pd.to_datetime(data_frame["Time"], errors="coerce")
+    data_frame["Temp_C"] = pd.to_numeric(data_frame["Temp_C"], errors="coerce")
+    data_frame["Precip_mm"] = pd.to_numeric(data_frame["Precip_mm"], errors="coerce")
+
+    row_count = len(data_frame)
+    data_frame = data_frame.dropna(subset=["Time", "Temp_C", "Precip_mm"])
+    dropped = row_count - len(data_frame)
+    if dropped:
+        logger.warning("Dropped %s hourly rows with missing values.", dropped)
+
+    logger.info("Loaded %s hourly forecast rows into a DataFrame.", len(data_frame))
+    return data_frame
+
+
+# Aggregate hourly weather data into daily summaries by city.
+def aggregate_daily_weather(hourly_df: pd.DataFrame) -> pd.DataFrame:
+    if hourly_df.empty:
+        logger.error("No hourly records available to aggregate.")
+        return pd.DataFrame(columns=["City", "Date", "Max_Temp_C", "Total_Precip_mm"])
+
+    data_frame = hourly_df.copy()
+    data_frame["Date"] = data_frame["Time"].dt.date
+    daily_summary = (
+        data_frame.groupby(["City", "Date"], as_index=False)
+        .agg(Max_Temp_C=("Temp_C", "max"), Total_Precip_mm=("Precip_mm", "sum"))
+    )
+    logger.info("Aggregated daily weather for %s city-day rows.", len(daily_summary))
+    return daily_summary
+
+
+# Join aggregated weather stats with normalized city names from the CSV.
+def merge_city_metadata(
+    daily_summary: pd.DataFrame, cities: pd.DataFrame
+) -> pd.DataFrame:
+    city_lookup = cities.rename(columns={"city": "City"}).drop_duplicates(subset=["City"])
+    merged = daily_summary.merge(city_lookup, on="City", how="left")
+
+    unmatched = merged["latitude"].isna().sum() if "latitude" in merged.columns else 0
+    if unmatched:
+        logger.warning("Weather rows with no matching CSV city: %s", unmatched)
+
+    logger.info("Merged city metadata into %s aggregated rows.", len(merged))
+    return merged
 
 
 def main() -> None:
@@ -175,6 +249,13 @@ def main() -> None:
         logger.info("Synchronous fetching completed in %.2f seconds.", sync_duration)
         print(f"Fetched weather for {fetched} of {len(weather)} cities.")
         print(f"Sequential execution time: {sync_duration:.2f} seconds.")
+
+        hourly_df = hourly_forecasts_to_dataframe(weather)
+        print(hourly_df.head())
+
+        daily_summary = aggregate_daily_weather(hourly_df)
+        daily_summary = merge_city_metadata(daily_summary, cities)
+        print(daily_summary.head())
     except Exception:
         logger.exception("Pipeline execution failed.")
         raise
