@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
+import httpx
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -18,6 +20,8 @@ RAW_CITIES_CSV = DATA_DIR / "raw_cities.csv"
 
 load_dotenv(ROOT_DIR / ".env")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
 logging.basicConfig(
     filename=ROOT_DIR / "pipeline.log",
@@ -121,6 +125,37 @@ def parse_cities_csv(filepath: str | Path | None = None) -> pd.DataFrame:
     return data_frame
 
 
+def fetch_weather(client: httpx.Client, city: str, lat: float, lon: float) -> dict:
+    """Fetch hourly forecast data for a single city from Open-Meteo."""
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "temperature_2m,precipitation",
+        "timezone": "auto",
+        "temperature_unit": os.getenv("WEATHER_UNIT", "celsius"),
+    }
+    try:
+        response = client.get(FORECAST_URL, params=params, timeout=10.0)
+        response.raise_for_status()
+        hourly = response.json().get("hourly")
+        logger.info("Successfully fetched weather data for %s", city)
+        return {"city": city, "data": hourly}
+    except httpx.HTTPError:
+        logger.error("Failed to fetch weather data for %s", city)
+        return {"city": city, "data": None}
+
+
+def fetch_weather_all_cities(cities: pd.DataFrame) -> list[dict]:
+    """Fetch weather data sequentially, one city at a time."""
+    results = []
+    with httpx.Client() as client:
+        for _, row in cities.iterrows():
+            results.append(
+                fetch_weather(client, row["city"], row["latitude"], row["longitude"])
+            )
+    return results
+
+
 def main() -> None:
     DATA_DIR.mkdir(exist_ok=True)
     REPORTS_DIR.mkdir(exist_ok=True)
@@ -130,6 +165,16 @@ def main() -> None:
         logger.info("Normalized %s cities from %s", len(cities), RAW_CITIES_CSV.name)
         print(f"Normalized {len(cities)} cities from {RAW_CITIES_CSV.name}:")
         print(cities.to_string(index=False))
+
+        logger.info("Beginning sequential weather data extraction...")
+        start_sync = time.perf_counter()
+        weather = fetch_weather_all_cities(cities)
+        sync_duration = time.perf_counter() - start_sync
+        fetched = sum(1 for result in weather if result["data"] is not None)
+        logger.info("Fetched weather for %s of %s cities", fetched, len(weather))
+        logger.info("Synchronous fetching completed in %.2f seconds.", sync_duration)
+        print(f"Fetched weather for {fetched} of {len(weather)} cities.")
+        print(f"Sequential execution time: {sync_duration:.2f} seconds.")
     except Exception:
         logger.exception("Pipeline execution failed.")
         raise
