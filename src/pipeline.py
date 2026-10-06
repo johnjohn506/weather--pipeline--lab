@@ -1,4 +1,4 @@
-"""Weather data pipeline: parse and normalize dirty city CSV input."""
+# Weather data pipeline: parse and normalize dirty city CSV input
 
 from __future__ import annotations
 
@@ -52,12 +52,13 @@ COLUMN_ALIASES = {
     "longitude": "longitude",
 }
 
+
 # Normalize messy CSV headers to snake_case aliases
 def normalize_header(name: object) -> str:
     cleaned = str(name).strip().lower()
     cleaned = re.sub(r"[\s\-]+", "_", cleaned)
     cleaned = re.sub(r"[^a-z0-9_]", "", cleaned)
-    return COLUMN_ALIASES.get(cleaned, cleaned) # type: ignore
+    return COLUMN_ALIASES.get(cleaned, cleaned)  # type: ignore
 
 
 # Clean a city label with regex search/replace, strip, and title-case
@@ -214,9 +215,8 @@ def aggregate_daily_weather(hourly_df: pd.DataFrame) -> pd.DataFrame:
 
     data_frame = hourly_df.copy()
     data_frame["Date"] = data_frame["Time"].dt.date
-    daily_summary = (
-        data_frame.groupby(["City", "Date"], as_index=False)
-        .agg(Max_Temp_C=("Temp_C", "max"), Total_Precip_mm=("Precip_mm", "sum"))
+    daily_summary = data_frame.groupby(["City", "Date"], as_index=False).agg(
+        Max_Temp_C=("Temp_C", "max"), Total_Precip_mm=("Precip_mm", "sum")
     )
     logger.info("Aggregated daily weather for %s city-day rows.", len(daily_summary))
     return daily_summary
@@ -226,7 +226,9 @@ def aggregate_daily_weather(hourly_df: pd.DataFrame) -> pd.DataFrame:
 def merge_city_metadata(
     daily_summary: pd.DataFrame, cities: pd.DataFrame
 ) -> pd.DataFrame:
-    city_lookup = cities.rename(columns={"city": "City"}).drop_duplicates(subset=["City"])
+    city_lookup = cities.rename(columns={"city": "City"}).drop_duplicates(
+        subset=["City"]
+    )
     merged = daily_summary.merge(city_lookup, on="City", how="left")
 
     unmatched = merged["latitude"].isna().sum() if "latitude" in merged.columns else 0
