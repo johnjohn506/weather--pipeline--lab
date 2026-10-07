@@ -12,7 +12,11 @@ from pathlib import Path
 # Third-party imports
 import httpx
 import pandas as pd
+import truststore
 from dotenv import load_dotenv
+
+# Use the OS certificate store so corporate TLS inspection roots are trusted.
+truststore.inject_into_ssl()
 
 # Project paths
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -152,8 +156,8 @@ def fetch_weather(client: httpx.Client, city: str, lat: float, lon: float) -> di
         hourly = response.json().get("hourly")
         logger.info("Successfully fetched weather data for %s", city)
         return {"city": city, "data": hourly}
-    except httpx.HTTPError:
-        logger.error("Failed to fetch weather data for %s", city)
+    except httpx.HTTPError as exc:
+        logger.error("Failed to fetch weather data for %s: %s", city, exc)
         return {"city": city, "data": None}
 
 
@@ -314,6 +318,8 @@ def main() -> None:
         logger.info("Synchronous fetching completed in %.2f seconds.", sync_duration)
         print(f"Fetched weather for {fetched} of {len(weather)} cities.")
         print(f"Sequential execution time: {sync_duration:.2f} seconds.")
+        if fetched == 0:
+            raise RuntimeError("Open-Meteo returned no weather data for any city.")
 
         # Convert the weather data to a DataFrame
         hourly_df = hourly_forecasts_to_dataframe(weather)
