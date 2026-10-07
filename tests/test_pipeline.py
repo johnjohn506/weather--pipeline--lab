@@ -1,7 +1,9 @@
 # Tests for the weather data pipeline
 
-from unittest.mock import MagicMock, patch
+# Standard library imports
+from unittest.mock import AsyncMock, MagicMock, patch
 
+# Third-party imports
 import httpx
 import pandas as pd
 import pytest
@@ -11,6 +13,7 @@ from src.pipeline import (
     aggregate_daily_weather,
     fetch_weather,
     fetch_weather_all_cities,
+    fetch_weather_all_cities_async,
     hourly_forecasts_to_dataframe,
     merge_city_metadata,
     normalize_city_name,
@@ -198,3 +201,31 @@ def test_fetch_weather_all_cities_does_not_hit_network(mock_client_cls):
     assert len(results) == 2
     assert mock_client.get.call_count == 2
     assert all(row["data"] is not None for row in results)
+
+
+# Test fetch_weather_all_cities_async does not hit network
+@pytest.mark.asyncio
+@patch("src.pipeline.httpx.AsyncClient")
+async def test_fetch_weather_all_cities_async_does_not_hit_network(mock_client_cls):
+    mock_response = MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = _hourly_payload()
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+    cities = pd.DataFrame(
+        {
+            "city": ["Paris", "Tokyo"],
+            "latitude": [48.85, 35.68],
+            "longitude": [2.35, 139.69],
+        }
+    )
+    results = await fetch_weather_all_cities_async(cities)
+
+    # Test fetch_weather_all_cities_async returns results
+    assert len(results) == 2
+    assert mock_client.get.await_count == 2
+    assert all(row["data"] is not None for row in results)
+    assert results[0]["data"]["temperature_2m"][0] == 22.5
