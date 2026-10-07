@@ -1,6 +1,6 @@
 # Weather Analytics & Alerting Pipeline
 
-An automated Python pipeline that extracts, cleans, transforms, and reports global forecast data from the [Open-Meteo](https://api.open-meteo.com/v1/forecast) REST API. It demonstrates CSV text normalization with regular expressions, `httpx` API integration, pandas aggregation, Excel and JSON reporting, offline pytest coverage with `unittest.mock`, and GitHub Actions CI with Ruff.
+An automated Python pipeline that extracts, cleans, transforms, and reports global forecast data from the [Open-Meteo](https://api.open-meteo.com/v1/forecast) REST API. It demonstrates CSV text normalization with regular expressions, sequential and concurrent `httpx` extraction with `asyncio`, a logged runtime comparison, pandas aggregation, Excel and JSON reporting, offline pytest coverage with `unittest.mock` and `pytest-asyncio`, and GitHub Actions CI with Ruff.
 
 ## Project structure
 
@@ -24,11 +24,11 @@ weather--pipeline--lab/
 
 - **Environment and packages:** Managed with `uv`, `pyproject.toml`, and `uv.lock`.
 - **Data cleaning:** Regular expressions plus `strip()` and title-case normalize messy city names.
-- **API extraction:** Sequential Open-Meteo requests for hourly `temperature_2m` and `precipitation` with `timezone=auto`.
+- **API extraction:** Sequential and concurrent Open-Meteo requests for hourly `temperature_2m` and `precipitation` with `timezone=auto`. The concurrent path uses `httpx.AsyncClient` and `asyncio.gather`. Both durations are logged, and the Excel and JSON reports are built from the concurrent results.
 - **Transformation:** Hourly JSON is loaded into pandas, timestamps are converted to datetime, and daily max temperature and precipitation are aggregated per city.
 - **Reporting:** Formatted Excel summary (`reports/weather_summary.xlsx`) and JSON heat alerts (`reports/alerts.json`) for days above 30°C.
 - **Logging:** `LOG_LEVEL` is read from `.env`; INFO and ERROR events go to `pipeline.log`.
-- **Testing and CI:** Pytest mocks the API so tests run offline. GitHub Actions runs Ruff and pytest on pull requests.
+- **Testing and CI:** Pytest mocks the sequential and concurrent API calls, including an async test with `pytest-asyncio`, so tests run offline. GitHub Actions runs Ruff and pytest on pull requests.
 
 ## Prerequisites
 
@@ -69,15 +69,16 @@ uv run python src/pipeline.py
 
 When it finishes:
 
-1. Execution details are written to `pipeline.log`.
-2. The daily weather summary is saved to `reports/weather_summary.xlsx`.
-3. City-days with a maximum temperature above 30°C are saved to `reports/alerts.json`.
+1. Execution details are written to `pipeline.log`, including the sequential duration, the concurrent duration, and how much faster the concurrent fetch was.
+2. The console prints `Sequential execution time` and `Concurrent execution time`.
+3. The daily weather summary is saved to `reports/weather_summary.xlsx`.
+4. City-days with a maximum temperature above 30°C are saved to `reports/alerts.json`.
 
-The pipeline needs network access only for the live Open-Meteo fetch. Generated reports stay local because `/reports` and `*.log` are gitignored.
+The live run calls Open-Meteo twice: once sequentially and once concurrently. Generated reports stay local because `/reports` and `*.log` are gitignored.
 
 ## Testing and code quality
 
-Run the test suite offline (Open-Meteo is mocked):
+Run the test suite offline. Open-Meteo is mocked for both `httpx.Client` and `httpx.AsyncClient`:
 
 ```powershell
 uv run pytest

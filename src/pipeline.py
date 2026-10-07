@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 # Standard library imports
+import asyncio
 import logging
 import os
 import re
@@ -172,6 +173,38 @@ def fetch_weather_all_cities(cities: pd.DataFrame) -> list[dict]:
     return results
 
 
+# Fetch hourly forecast data for a single city concurrently
+async def fetch_weather_async(
+    client: httpx.AsyncClient, city: str, lat: float, lon: float
+) -> dict:
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "temperature_2m,precipitation",
+        "timezone": "auto",
+        "temperature_unit": os.getenv("WEATHER_UNIT", "celsius"),
+    }
+    try:
+        response = await client.get(FORECAST_URL, params=params, timeout=10.0)
+        response.raise_for_status()
+        hourly = response.json().get("hourly")
+        logger.info("Successfully fetched weather data for %s", city)
+        return {"city": city, "data": hourly}
+    except httpx.HTTPError as exc:
+        logger.error("Failed to fetch weather data for %s: %s", city, exc)
+        return {"city": city, "data": None}
+
+
+# Fetch weather data for every city at the same time
+async def fetch_weather_all_cities_async(cities: pd.DataFrame) -> list[dict]:
+    async with httpx.AsyncClient() as client:
+        tasks = [
+            fetch_weather_async(client, row["city"], row["latitude"], row["longitude"])
+            for _, row in cities.iterrows()
+        ]
+        return list(await asyncio.gather(*tasks))
+
+
 # Parse Open-Meteo hourly JSON into a DataFrame with datetime timestamps
 def hourly_forecasts_to_dataframe(raw_results: list[dict]) -> pd.DataFrame:
     records = []
@@ -311,13 +344,32 @@ def main() -> None:
         # Begin sequential weather data extraction
         logger.info("Beginning sequential weather data extraction...")
         start_sync = time.perf_counter()
-        weather = fetch_weather_all_cities(cities)
+        weather_sync = fetch_weather_all_cities(cities)
         sync_duration = time.perf_counter() - start_sync
+        fetched_sync = sum(1 for result in weather_sync if result["data"] is not None)
+        logger.info(
+            "Fetched weather for %s of %s cities", fetched_sync, len(weather_sync)
+        )
+        logger.info("Synchronous fetching completed in %.2f seconds.", sync_duration)
+
+        # Begin concurrent weather data extraction
+        logger.info("Beginning concurrent weather data extraction...")
+        start_async = time.perf_counter()
+        weather = asyncio.run(fetch_weather_all_cities_async(cities))
+        async_duration = time.perf_counter() - start_async
         fetched = sum(1 for result in weather if result["data"] is not None)
         logger.info("Fetched weather for %s of %s cities", fetched, len(weather))
-        logger.info("Synchronous fetching completed in %.2f seconds.", sync_duration)
+        logger.info("Asynchronous fetching completed in %.2f seconds.", async_duration)
+        logger.info(
+            "Concurrent fetch finished %.2f seconds faster than sequential "
+            "(%.2fs vs %.2fs).",
+            sync_duration - async_duration,
+            async_duration,
+            sync_duration,
+        )
         print(f"Fetched weather for {fetched} of {len(weather)} cities.")
         print(f"Sequential execution time: {sync_duration:.2f} seconds.")
+        print(f"Concurrent execution time: {async_duration:.2f} seconds.")
         if fetched == 0:
             raise RuntimeError("Open-Meteo returned no weather data for any city.")
 
